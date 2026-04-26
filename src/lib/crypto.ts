@@ -1,5 +1,5 @@
-import { x25519 } from "@noble/curves/ed25519";
-import { sha256 } from "@noble/hashes/sha2";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { Keypair } from "@stellar/stellar-sdk";
 
 /**
