@@ -5,7 +5,7 @@ import { cn } from '../../lib/utils';
 import { TerminalLine, MetaKeypair, Nomination } from '../../types';
 
 // Import real logic
-import { generateMetaKey, deriveStealthAddress, checkStealthAddress } from '../../lib/crypto';
+import { generateMetaKey, deriveStealthAddress, checkStealthAddress, recoverMetaKey } from '../../lib/crypto';
 import { submitDepositTx, submitWithdrawTx, scanBlockchainForStealthEvents } from '../../lib/soroban';
 import { isConnected, requestAccess } from '@stellar/freighter-api';
 
@@ -17,11 +17,16 @@ export const Terminal: React.FC = () => {
   
   // Real App States
   const [freighterPubKey, setFreighterPubKey] = useState<string | null>(null);
-  const [scannedFunds, setScannedFunds] = useState<any>(null);
+  const [scannedFunds, setScannedFunds] = useState<any[]>([]);
+  const [selectedFundIndex, setSelectedFundIndex] = useState<number | null>(null);
 
   // Deposit Protocol States
   const [targetMetaKey, setTargetMetaKey] = useState<string>('');
   const [selectedAmount, setSelectedAmount] = useState<number | null>(null);
+
+  // Key Management & Withdraw States
+  const [importKeyInput, setImportKeyInput] = useState<string>('');
+  const [withdrawDest, setWithdrawDest] = useState<string>('');
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -144,7 +149,7 @@ export const Terminal: React.FC = () => {
           addLine(`PUBLIC META: ${metaKey.publicKey.slice(0, 16)}...`);
           addLine(`PRIVATE META: ${metaKey.privateKey ? '********' : 'NOT SET'}`);
         }
-        addLine(`SCANNED FUNDS: ${scannedFunds ? 'READY FOR WITHDRAWAL' : 'NONE'}`);
+        addLine(`SCANNED FUNDS: ${scannedFunds.length} CLUSTERS READY`);
         break;
 
       case 'deposit':
@@ -200,18 +205,17 @@ export const Terminal: React.FC = () => {
           const events = await scanBlockchainForStealthEvents();
           addLine(`FETCHED ${events.length} STEALTH EVENTS. DECRYPTING...`, 'output');
           
-          let found = false;
+          const foundFunds = [];
           for (let evt of events) {
             const check = checkStealthAddress(evt.ephemeralPubHex, evt.encryptedSeedHex, metaKey.privateKey);
             if (check && check.stealthAddress === evt.stealthAddress) {
-              setScannedFunds(check);
-              found = true;
-              break;
+              foundFunds.push(check);
             }
           }
 
-          if (found) {
-            addLine('FUNDS LOCATED AND DECRYPTED SUCCESSFULLY.', 'success');
+          if (foundFunds.length > 0) {
+            setScannedFunds(foundFunds);
+            addLine(`LOCATED AND DECRYPTED ${foundFunds.length} FUND CLUSTER(S).`, 'success');
             addLine('READY FOR WITHDRAWAL.', 'success');
           } else {
             addLine('NO MATCHING FUNDS FOUND FOR THIS META KEY.', 'error');
@@ -224,21 +228,31 @@ export const Terminal: React.FC = () => {
         break;
 
       case 'withdraw':
-        if (!scannedFunds) {
+        if (scannedFunds.length === 0) {
           addLine('ERROR: NO FUNDS SCANNED. RUN `SCAN` FIRST.', 'error');
           break;
         }
-        const dest = args[0];
+        if (selectedFundIndex === null || selectedFundIndex >= scannedFunds.length) {
+          addLine('ERROR: NO FUND CLUSTER SELECTED.', 'error');
+          break;
+        }
+        const dest = args[0] || withdrawDest;
         if (!dest) {
           addLine('USAGE: WITHDRAW <ADDR>', 'error');
         } else {
           setIsProcessing(true);
           addLine('CONSTRUCTING ZK-PROOF PAYLOAD...', 'warning');
           try {
-            const hash = await submitWithdrawTx(scannedFunds.stealthSeedSecret, dest);
+            const targetFund = scannedFunds[selectedFundIndex];
+            const hash = await submitWithdrawTx(targetFund.stealthSeedSecret, dest);
             addLine('WITHDRAWAL EXECUTED SUCCESSFULLY.', 'success');
             addLine(`TX ID: ${hash.slice(0, 12)}...`, 'success');
-            setScannedFunds(null); // Reset after successful withdraw
+            
+            // Remove the withdrawn fund from the array
+            const newFunds = [...scannedFunds];
+            newFunds.splice(selectedFundIndex, 1);
+            setScannedFunds(newFunds);
+            setSelectedFundIndex(null);
           } catch (e: any) {
             addLine(`FAILED: ${e.message}`, 'error');
           } finally {
@@ -264,13 +278,13 @@ export const Terminal: React.FC = () => {
         if (!secretKey) {
           addLine('USAGE: SET_SECRET <SK>', 'error');
         } else {
-          if (metaKey) {
-            const updated = { ...metaKey, privateKey: secretKey };
-            setMetaKey(updated);
-            localStorage.setItem('stellar_privacy_meta_key', JSON.stringify(updated));
-            addLine('SECRET UPDATED.', 'success');
-          } else {
-            addLine('IMPORT PUBLIC KEY FIRST.', 'error');
+          try {
+            const recovered = recoverMetaKey(secretKey);
+            setMetaKey({ publicKey: recovered.publicKeyHex, privateKey: recovered.privateKeyHex });
+            localStorage.setItem('stellar_privacy_meta_key', JSON.stringify({ publicKey: recovered.publicKeyHex, privateKey: recovered.privateKeyHex }));
+            addLine('META KEY RECOVERED AND LOADED.', 'success');
+          } catch (e) {
+            addLine('FAILED TO RECOVER KEY. INVALID HEX.', 'error');
           }
         }
         break;
@@ -361,13 +375,37 @@ export const Terminal: React.FC = () => {
             </div>
 
             {freighterPubKey ? (
-              <button 
-                onClick={() => handleCommand('keygen')}
-                disabled={isProcessing}
-                className="w-full py-4 border border-[#00FFA3] text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all uppercase tracking-widest cursor-pointer disabled:opacity-50"
-              >
-                Generate New Meta Keypair
-              </button>
+              <div className="flex flex-col gap-2">
+                <button 
+                  onClick={() => handleCommand('keygen')}
+                  disabled={isProcessing}
+                  className="w-full py-4 border border-[#00FFA3] text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all uppercase tracking-widest cursor-pointer disabled:opacity-50"
+                >
+                  Generate New Meta Keypair
+                </button>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    value={importKeyInput}
+                    onChange={(e) => setImportKeyInput(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    placeholder="Paste Private Meta Key..."
+                    className="flex-1 bg-black border border-[#333] p-3 text-[10px] focus:border-[#00FFA3] outline-none text-gray-300 placeholder:text-gray-700 font-mono"
+                  />
+                  <button 
+                    onClick={() => {
+                      if (importKeyInput) {
+                        handleCommand(`set_secret ${importKeyInput}`);
+                        setImportKeyInput('');
+                      }
+                    }}
+                    disabled={isProcessing || !importKeyInput}
+                    className="px-4 border border-[#333] bg-black text-white text-[10px] hover:border-[#00FFA3] transition-colors disabled:opacity-30 cursor-pointer"
+                  >
+                    RESTORE
+                  </button>
+                </div>
+              </div>
             ) : (
               <button 
                 onClick={() => handleCommand('connect')}
@@ -397,6 +435,7 @@ export const Terminal: React.FC = () => {
                 type="text" 
                 value={targetMetaKey}
                 onChange={(e) => setTargetMetaKey(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
                 placeholder="Leave blank to send to yourself..."
                 className="w-full bg-black border border-[#333] p-3 text-[10px] focus:border-[#00FFA3] outline-none text-gray-300 placeholder:text-gray-700 font-mono"
               />
@@ -443,7 +482,7 @@ export const Terminal: React.FC = () => {
         <section className="border border-[#333] p-6 flex flex-col bg-[#0A0A0A]/80 backdrop-blur-sm relative overflow-hidden group hover:border-[#00FFA3]/50 transition-colors">
           <h2 className="text-[11px] font-semibold mb-8 border-l-2 border-[#00FFA3] pl-3 uppercase tracking-widest leading-none flex justify-between">
             03. Secure Withdrawal
-            {scannedFunds && <span className="text-[#00FFA3] animate-pulse">FUNDS READY</span>}
+            {scannedFunds.length > 0 && <span className="text-[#00FFA3] animate-pulse">{scannedFunds.length} CLUSTERS READY</span>}
           </h2>
           
           <div className="space-y-6 flex-grow flex flex-col">
@@ -456,21 +495,67 @@ export const Terminal: React.FC = () => {
               Scan Blockchain For Funds
             </button>
 
+            {scannedFunds.length > 0 && (
+              <div className="space-y-2 max-h-32 overflow-y-auto scrollbar-hide mb-4 border border-[#333] p-2 bg-[#111]">
+                <label className="block text-[9px] text-[#00FFA3] uppercase tracking-widest mb-2 px-1">Available Clusters</label>
+                {scannedFunds.map((fund, idx) => (
+                  <div 
+                    key={fund.stealthAddress}
+                    onClick={() => setSelectedFundIndex(idx)}
+                    className={cn(
+                      "p-3 border text-[10px] font-mono cursor-pointer transition-colors flex justify-between items-center",
+                      selectedFundIndex === idx
+                        ? "border-[#00FFA3] bg-[#00FFA3]/10 text-[#00FFA3]"
+                        : "border-[#333] text-gray-400 hover:border-[#00FFA3]/50"
+                    )}
+                  >
+                    <span>CLUSTER #{idx + 1}</span>
+                    <span>{fund.stealthAddress.slice(0, 12)}...</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div>
-              <label className="block text-[9px] text-gray-500 uppercase mb-2 tracking-widest">Recipient Address</label>
+              <div className="flex justify-between items-end mb-2">
+                <label className="block text-[9px] text-gray-500 uppercase tracking-widest">Recipient Address</label>
+                {freighterPubKey && (
+                  <button 
+                    onClick={() => setWithdrawDest(freighterPubKey)}
+                    className="text-[9px] text-[#00FFA3] hover:text-white uppercase tracking-widest cursor-pointer transition-colors disabled:opacity-30"
+                    disabled={scannedFunds.length === 0}
+                  >
+                    [ USE WALLET ]
+                  </button>
+                )}
+              </div>
               <input 
                 type="text" 
+                value={withdrawDest}
+                onChange={(e) => setWithdrawDest(e.target.value)}
                 placeholder="G... (Stellar Alpha-Address)"
                 className="w-full bg-black border border-[#333] p-3 text-[10px] focus:border-[#00FFA3] outline-none text-gray-300 placeholder:text-gray-700 font-mono"
-                disabled={!scannedFunds}
+                disabled={scannedFunds.length === 0}
+                onClick={(e) => e.stopPropagation()}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
-                    handleCommand(`withdraw ${(e.target as HTMLInputElement).value}`);
-                    (e.target as HTMLInputElement).value = '';
+                    handleCommand(`withdraw ${withdrawDest}`);
+                    setWithdrawDest('');
                   }
                 }}
               />
             </div>
+            
+            <button 
+              onClick={() => {
+                handleCommand(`withdraw ${withdrawDest}`);
+                setWithdrawDest('');
+              }}
+              disabled={isProcessing || scannedFunds.length === 0 || !withdrawDest || selectedFundIndex === null}
+              className="w-full py-4 border border-[#00FFA3] bg-[#00FFA3]/10 text-[#00FFA3] text-[10px] font-bold hover:bg-[#00FFA3] hover:text-black transition-all uppercase tracking-widest cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed shadow-[0_0_15px_rgba(0,255,163,0.1)]"
+            >
+              EXECUTE WITHDRAWAL
+            </button>
 
             <div className="bg-[#111] p-4 border-l border-white/10 space-y-3 mt-auto">
               <div className="flex justify-between text-[9px] tracking-widest uppercase">

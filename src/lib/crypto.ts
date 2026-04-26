@@ -19,6 +19,17 @@ export function generateMetaKey() {
 }
 
 /**
+ * Recover a Meta-Keypair from an existing private key hex.
+ */
+export function recoverMetaKey(privateKeyHex: string) {
+  const publicKey = x25519.getPublicKey(privateKeyHex);
+  return {
+    privateKeyHex,
+    publicKeyHex: Buffer.from(publicKey).toString("hex"),
+  };
+}
+
+/**
  * XOR two byte arrays of the same length
  */
 function xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
