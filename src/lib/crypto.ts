@@ -9,7 +9,7 @@ import { Keypair } from "@stellar/stellar-sdk";
  * @returns { privateKeyHex, publicKeyHex }
  */
 export function generateMetaKey() {
-  const privateKey = x25519.utils.randomPrivateKey();
+  const privateKey = x25519.utils.randomSecretKey();
   const publicKey = x25519.getPublicKey(privateKey);
   
   return {
@@ -22,7 +22,7 @@ export function generateMetaKey() {
  * Recover a Meta-Keypair from an existing private key hex.
  */
 export function recoverMetaKey(privateKeyHex: string) {
-  const publicKey = x25519.getPublicKey(privateKeyHex);
+  const publicKey = x25519.getPublicKey(Buffer.from(privateKeyHex, 'hex'));
   return {
     privateKeyHex,
     publicKeyHex: Buffer.from(publicKey).toString("hex"),
@@ -50,11 +50,11 @@ function xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
  */
 export function deriveStealthAddress(bobPublicKeyHex: string) {
   // 1. Generate Alice's ephemeral ECDH keypair
-  const ephemeralPriv = x25519.utils.randomPrivateKey();
+  const ephemeralPriv = x25519.utils.randomSecretKey();
   const ephemeralPub = x25519.getPublicKey(ephemeralPriv);
 
   // 2. Compute Shared Secret Point
-  const sharedSecretPointBytes = x25519.getSharedSecret(ephemeralPriv, bobPublicKeyHex);
+  const sharedSecretPointBytes = x25519.getSharedSecret(ephemeralPriv, Buffer.from(bobPublicKeyHex, 'hex'));
   
   // Hash the shared secret point to get our 32-byte encryption key
   const sharedSecretHash = sha256(sharedSecretPointBytes);
@@ -85,8 +85,8 @@ export function checkStealthAddress(
   try {
     // 1. Bob computes the Shared Secret Point: Bob's PrivateKey * Ephemeral PublicKey
     const sharedSecretPointBytes = x25519.getSharedSecret(
-      bobPrivateKeyHex, 
-      ephemeralPubHex
+      Buffer.from(bobPrivateKeyHex, 'hex'), 
+      Buffer.from(ephemeralPubHex, 'hex')
     );
 
     // 2. Hash to get the 32-byte decryption key
